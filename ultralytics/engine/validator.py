@@ -336,3 +336,53 @@ class BaseValidator:
     def eval_json(self, stats):
         """Evaluate and return JSON format of prediction statistics."""
         pass
+
+import tvm
+from tvm import relay
+
+class TVMValidator(BaseValidator):
+    def __init__(self, dataloader=None, save_dir=None, pbar=None, args=None, _callbacks=None):
+        super().__init__(dataloader=dataloader, save_dir=save_dir, pbar=pbar, args=args, _callbacks=_callbacks)
+        self.mod = None  # Placeholder for the TVM module
+
+    def preprocess(self, batch):
+        # Perform pre-processing on the input batch (e.g., normalization)
+        return batch
+
+    def postprocess(self, preds):
+        # Perform post-processing on the inference results (e.g., decoding bounding boxes)
+        return preds
+
+    def load_model(self, model_path):
+        # Load the YOLO model into TVM
+        onnx_model = onnx.load(model_path)
+        mod, params = relay.frontend.from_onnx(onnx_model)
+        self.mod = mod
+        self.params = params
+
+    def run_inference(self, batch):
+        # Run inference using TVM
+        with tvm.transform.PassContext(opt_level=3):
+            executor = relay.build(mod, target="llvm", params=params)
+            module = tvm.contrib.graph_runtime.GraphModule(executor["default"](tvm.cpu(0)))
+            module.set_input("input", batch)
+            module.run()
+
+        # Get inference results
+        output = module.get_output(0).asnumpy()
+        return output
+
+    def __call__(self):
+        # Load the YOLO model
+        self.load_model(self.args.model)
+
+        # Run validation
+        for batch_i, batch in enumerate(self.dataloader):
+            batch = self.preprocess(batch)
+            preds = self.run_inference(batch)
+            preds = self.postprocess(preds)
+            self.update_metrics(preds, batch)
+
+        stats = self.get_stats()
+        self.print_results()
+        return stats
